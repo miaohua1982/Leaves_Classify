@@ -46,7 +46,7 @@ class LeavesDatasets:
 
 class LeavesDatasets_Alb(LeavesDatasets):
     def __init__(self, image_path, label_path, transformers, ratio=0.8, is_train=True):
-        super(LeavesDatasets_Ab, self).__init__(self, image_path, label_path, transformers, ratio, is_train)
+        super(LeavesDatasets_Alb, self).__init__(image_path, label_path, transformers, ratio, is_train)
 
     def __getitem__(self, idx):
         if self.is_train:
@@ -58,7 +58,7 @@ class LeavesDatasets_Alb(LeavesDatasets):
         img = cv2.imread(img_path)
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)    #  (224, 224, 3) with np.ndarray
         if self.transformers:
-            trans_img1 = self.transformers(image=img)['image']  # [3, 224, 224]
+            img = self.transformers(image=img)['image']  # [3, 224, 224]
                 
         label = self.labelinds[one_image[1]]
         return img, label

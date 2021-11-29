@@ -158,7 +158,7 @@ def train(classes_num, spot_step, model_path):
     else:
         net = t.load(model_path)
 
-    trainloader, validateloader, trainset, validateset = get_train_validate_dataloader(img_base_path, label_path, batch_size)
+    trainloader, validateloader, trainset, validateset = get_train_validate_dataloader(img_base_path, label_path, batch_size, True)
 
     train_criterion = tu.SoftTargetCrossEntropy()
     test_criterion = nn.CrossEntropyLoss()
