@@ -6,8 +6,11 @@ from torch.optim import lr_scheduler
 import torchvision as tv
 import os
 import time
-from leavesds import LeavesDatasets, LeavesDatasets_Alb
+from sklearn.model_selection import KFold
+
+from leavesds import LeavesDatasets, LeavesDatasets2, LeavesDatasets_Alb, LeavesDatasets_Alb2, get_n_splits
 from model_leaves import model_leaves_py, model_leaves_timm
+
 import torch_utils as tu
 
 import albumentations
@@ -27,6 +30,56 @@ img_base_path = "classify-leaves"
 7、使用flod(n_flod=5), model ensemble
 8、使用tta(test time argument)
 '''
+
+def get_train_validate_dataloader_kflod(train_idx, test_idx, ds, batch_size=64, alb=False):
+    train_ds = ds.iloc[train_idx]
+    test_ds = ds.iloc[test_idx]
+
+    train_transform = transforms.Compose(
+        [transforms.Resize(288),
+        transforms.RandomRotation(90),
+        #transforms.RandomResizedCrop(224,scale=(0.3,1.0)),
+        transforms.RandomAffine(degrees=45, shear=(10, 20, 10, 20), scale=(0.75, 1.2), translate=(0.1, 0.1)),
+        transforms.CenterCrop(224),
+        transforms.RandomHorizontalFlip(p=0.5),
+        transforms.RandomVerticalFlip(p=0.5),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
+
+    valid_transform = transforms.Compose(
+        [transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
+
+    alb_train_transform = albumentations.Compose([
+        albumentations.Resize(224, 224, interpolation=cv2.INTER_AREA),
+        albumentations.RandomRotate90(p=0.5),
+        albumentations.Transpose(p=0.5),
+        albumentations.Flip(p=0.5),
+        albumentations.ShiftScaleRotate(shift_limit=0.0625, scale_limit=0.0625, rotate_limit=45, border_mode=cv2.BORDER_REPLICATE, p=0.5),
+        #tu.randAugment(N=2,M=6,p=1,cut_out=True),    
+        albumentations.Normalize(),
+        AT.ToTensorV2(),    # change to torch.tensor, and permute CHW to HWC
+        ])
+    
+    alb_valid_transform = albumentations.Compose([
+        albumentations.Normalize(),
+        AT.ToTensorV2(),    # change to torch.tensor, and permute CHW to HWC
+        ])
+
+    if alb:
+        trainset = LeavesDatasets_Alb2(train_ds, img_base_path, alb_train_transform)
+        validateset = LeavesDatasets_Alb2(test_ds, img_base_path, alb_valid_transform)
+    else:
+        trainset = LeavesDatasets2(train_ds, img_base_path, train_transform)
+        validateset = LeavesDatasets2(test_ds, img_base_path, train_transform)
+
+    trainloader = t.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True, drop_last=True)
+    validateloader = t.utils.data.DataLoader(validateset, batch_size=batch_size, shuffle=False, drop_last=False)
+
+    return trainloader, validateloader, trainset, validateset
+
 
 def get_train_validate_dataloader(img_base_path, label_path, batch_size=64, alb=False):
     train_transform = transforms.Compose(
@@ -183,8 +236,63 @@ def train(classes_num, spot_step, model_path):
     print('[%s] Finished Training' % (time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(time.time()))))
 
 
+def train_kflod(classes_num, spot_step, model_path):
+    MIXUP = 0.1
+    batch_size = 64
+    epochs = 50 
+    learning_rate = 0.003  # learning rate
+
+    print('[%s] We start to train model......' % (time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(time.time()))))
+    if model_path is None:
+        # net = model_leaves_py(classes_num)
+        net = model_leaves_timm(classes_num)
+    else:
+        net = t.load(model_path)
+
+    # add k-flod
+    kflod = KFold(shuffle=True, n_splits=5, random_state=501)
+    train_idxs, test_idxs, ds = get_n_splits(label_path, kflod)
+    
+    for train_idx, test_idx in zip(train_idxs, test_idxs):
+    
+        trainloader, validateloader, trainset, validateset = get_train_validate_dataloader_kflod(train_idx, test_idx, ds, batch_size, True)
+
+        train_criterion = tu.SoftTargetCrossEntropy()
+        test_criterion = nn.CrossEntropyLoss()
+        params_01x = [param for name, param in net.named_parameters() if name not in ["fc.weight", "fc.bias"]]
+        optimizer = optim.AdamW([{"params":params_01x, 'lr':learning_rate*0.1}, {"params":net.fc.parameters()}], 
+                                lr=learning_rate, weight_decay=2e-4)
+        # scheduler = lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
+        scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs*len(trainloader), eta_min=learning_rate/20)
+        mixup_fn = tu.Mixup(prob=MIXUP, switch_prob=0.0, onehot=True, label_smoothing=0.05, num_classes=trainset.get_classes_num())
+        
+        best_acc = 0.0
+        best_loss = 100.0
+        for epoch in range(epochs):
+            # train
+            one_epoch_avgloss, one_epoch_acc = model_train(net, trainloader, train_criterion, optimizer, scheduler, epoch, spot_step, mixup_fn, MIXUP)
+            print('[%s] [%d, %5d] loss: %.5f, accu: %.5f' % (time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(time.time())), epoch+1, epochs, one_epoch_avgloss, one_epoch_acc))
+            # validate
+            val_avgloss, val_acc = model_validate(net, test_criterion, validateloader)
+            print('[%s] In validate set loss: %.5f, accu: %.5f' % (time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(time.time())), val_avgloss, val_acc))
+
+            if val_acc > best_acc:
+                print('Save a model under model_storage floder with acc %.5f, loss %.5f' % (val_acc, val_avgloss))
+                t.save(net.state_dict(), 'model_storage/model_leaf_%s_%d_%.6f.pkl' % (time.strftime('%Y-%m-%d',time.localtime(time.time())), epoch+1, val_acc))
+                best_acc = val_acc
+            
+            if val_acc == best_acc and best_loss > val_avgloss:
+                print('Save a model under model_storage floder with acc %.5f, loss %.5f' % (val_acc, val_avgloss))
+                t.save(net.state_dict(), 'model_storage/model_leaf_%s_%d_%.6f.pkl' % (time.strftime('%Y-%m-%d',time.localtime(time.time())), epoch+1, val_acc))
+                best_loss = val_avgloss                
+
+            print('current lr is changing to', optimizer.param_groups[0]['lr'])
+
+        print('[%s] Finished Training' % (time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(time.time()))))
+
+
 if __name__ == '__main__':
     classes_num = 176
     spot_step = 20
     model_path = None
-    train(classes_num, spot_step, model_path)
+    train_kflod(classes_num, spot_step, model_path)
