@@ -71,6 +71,10 @@ class LeavesDatasets2:
         self.image_path_base = image_path
         self.transformers = transformers
 
+    def set_labels(self, uniform_labels):
+        self.labels = uniform_labels
+        self.labelinds = {k:i for i, k in enumerate(self.labels)}
+        
     def ind2label(self, ind):
         return self.labels[ind]
 

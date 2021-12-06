@@ -75,6 +75,7 @@ def get_train_validate_dataloader_kflod(train_idx, test_idx, ds, batch_size=64, 
         trainset = LeavesDatasets2(train_ds, img_base_path, train_transform)
         validateset = LeavesDatasets2(test_ds, img_base_path, train_transform)
 
+    validateset.set_labels(trainset.labels)
     trainloader = t.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True, drop_last=True)
     validateloader = t.utils.data.DataLoader(validateset, batch_size=batch_size, shuffle=False, drop_last=False)
 
@@ -243,12 +244,6 @@ def train_kflod(classes_num, spot_step, model_path):
     learning_rate = 0.003  # learning rate
 
     print('[%s] We start to train model......' % (time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(time.time()))))
-    if model_path is None:
-        # net = model_leaves_py(classes_num)
-        net = model_leaves_timm(classes_num)
-    else:
-        net = t.load(model_path)
-
     # add k-flod
     kflod = KFold(shuffle=True, n_splits=5, random_state=501)
     train_idxs, test_idxs, ds = get_n_splits(label_path, kflod)
@@ -256,6 +251,12 @@ def train_kflod(classes_num, spot_step, model_path):
     for train_idx, test_idx in zip(train_idxs, test_idxs):
     
         trainloader, validateloader, trainset, validateset = get_train_validate_dataloader_kflod(train_idx, test_idx, ds, batch_size, True)
+
+        if model_path is None:
+            # net = model_leaves_py(classes_num)
+            net = model_leaves_timm(classes_num)
+        else:
+            net = t.load(model_path)
 
         train_criterion = tu.SoftTargetCrossEntropy()
         test_criterion = nn.CrossEntropyLoss()
@@ -280,8 +281,7 @@ def train_kflod(classes_num, spot_step, model_path):
                 print('Save a model under model_storage floder with acc %.5f, loss %.5f' % (val_acc, val_avgloss))
                 t.save(net.state_dict(), 'model_storage/model_leaf_%s_%d_%.6f.pkl' % (time.strftime('%Y-%m-%d',time.localtime(time.time())), epoch+1, val_acc))
                 best_acc = val_acc
-            
-            if val_acc == best_acc and best_loss > val_avgloss:
+            elif val_acc == best_acc and best_loss > val_avgloss:
                 print('Save a model under model_storage floder with acc %.5f, loss %.5f' % (val_acc, val_avgloss))
                 t.save(net.state_dict(), 'model_storage/model_leaf_%s_%d_%.6f.pkl' % (time.strftime('%Y-%m-%d',time.localtime(time.time())), epoch+1, val_acc))
                 best_loss = val_avgloss                
